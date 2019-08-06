@@ -6,6 +6,7 @@ import glob
 from collections import namedtuple
 import gym
 import numpy as np
+from random import randint
 from ecl.summary import EclSum
 from ecl.eclfile import EclFile
 from ecl_gym.envs.read_data_file import read_data
@@ -48,21 +49,24 @@ class EclEnv(gym.Env):
     ## The constructor.
     def __init__(self):
         # Create a logging directory
-        if not os.path.exists(LOG_PATH):
-            os.makedirs(LOG_PATH)
+        self.logging_path = LOG_PATH + "SIM_" + str(randint(0, 999)) + "/"
+        if not os.path.exists(self.logging_path):
+            os.makedirs(self.logging_path)
         else:
-            shutil.rmtree(LOG_PATH)
-            os.makedirs(LOG_PATH)
+            shutil.rmtree(self.logging_path)
+            os.makedirs(self.logging_path)
         self.simulation_iter = 1
-        self.restart_file = ECL_SIM_MODEL_PATH + ECL_SIM_MODEL_NAME.replace(".DATA", "")
-        self.file = open(LOG_PATH + "logging.txt", "a+")
+        shutil.copyfile(ECL_SIM_MODEL_PATH + ECL_SIM_MODEL_NAME, \
+            self.logging_path + ECL_SIM_MODEL_NAME)
+        self.restart_file = self.logging_path + ECL_SIM_MODEL_NAME.replace(".DATA", "")
+        self.file = open(self.logging_path + "logging.txt", "a+")
         self.wells = WellStruct
         self.wells.name = [] 
         self.wells.i_indx = [] 
         self.wells.j_indx = [] 
         self.wells.is_producer = []
         self.dims, self.solution_kw, self.summary_kw, welspecs = \
-        read_data(ECL_SIM_MODEL_PATH + ECL_SIM_MODEL_NAME)
+        read_data(self.logging_path + ECL_SIM_MODEL_NAME)
         try:
             [[self.wells.name.append(welspecs[w][0]), self.wells.i_indx.append(int(welspecs[w][2]) - 1), \
             self.wells.j_indx.append(int(welspecs[w][3]) - 1), self.wells.is_producer.append(None)] \
@@ -95,7 +99,10 @@ class EclEnv(gym.Env):
             [[action[w][i] for w in range(self.n_agents)] for i in range(4)]
         obs, reward, done, obs_full = \
              self.__step_spec(value, is_rate, is_producer, is_open, TIME_STEP_SIZE)
-        return obs, reward, done, obs_full
+        if (self.simulation_iter > MAX_NUMBER_ITERATIONS):
+            done[0] = True
+        obs_full = obs_full.reshape(-1)
+        return obs_full, reward, done, obs
 
     ## Internal implementation of step method
     #  @param self The object pointer.
@@ -105,7 +112,7 @@ class EclEnv(gym.Env):
     #  @param is_open Defines if a well is open.
     #  @param time_step_size Timestep size for this step.
     def __step_spec(self, value, is_rate, is_producer, is_open, time_step_size):
-        with open(LOG_PATH + ECL_SIM_MODEL_NAME, "w") as file_obj:
+        with open(self.logging_path + ECL_SIM_MODEL_NAME, "w") as file_obj:
             self.__add_restart_and_load_keyword(file_obj)
             file_obj.write("\nSCHEDULE")
             for w_indx in range(self.n_agents):
@@ -119,8 +126,8 @@ class EclEnv(gym.Env):
             file_obj.write("\nTSTEP")
             file_obj.write("\n{} /".format(time_step_size))
             file_obj.write("\nEND")
-        self.__run_simulation(LOG_PATH.replace('/mnt/c', 'C:') + ECL_SIM_MODEL_NAME.replace(".DATA", ""))
-        obs, rewards, dones, obs_full = self.__get_data_from_file(LOG_PATH.replace('/', '\\') \
+        self.__run_simulation(self.logging_path.replace('/mnt/c', 'C:') + ECL_SIM_MODEL_NAME.replace(".DATA", ""))
+        obs, rewards, dones, obs_full = self.__get_data_from_file(self.logging_path.replace('/', '\\') \
             + ECL_SIM_MODEL_NAME)
         return obs, rewards, dones, obs_full
 
@@ -149,12 +156,15 @@ class EclEnv(gym.Env):
     #  @param self The object pointer.
     def reset(self):
         self.simulation_iter = 1
-        self.restart_file = ECL_SIM_MODEL_PATH + ECL_SIM_MODEL_NAME.replace(".DATA", "")
-        self.__run_simulation(ECL_SIM_MODEL_PATH.replace('/mnt/c', 'C:') \
+        shutil.copyfile(ECL_SIM_MODEL_PATH + ECL_SIM_MODEL_NAME, \
+            self.logging_path + ECL_SIM_MODEL_NAME)
+        self.restart_file = self.logging_path + ECL_SIM_MODEL_NAME.replace(".DATA", "")
+        self.__run_simulation(self.logging_path.replace('/mnt/c', 'C:') \
             + ECL_SIM_MODEL_NAME.replace(".DATA", ""))
-        obs, _, _, _ = self.__get_data_from_file(ECL_SIM_MODEL_PATH.replace('/', '\\') \
+        obs, _, _, obs_full = self.__get_data_from_file(self.logging_path.replace('/', '\\') \
             + ECL_SIM_MODEL_NAME, is_reset=True)
-        return obs
+        obs_full = obs_full.reshape(-1)
+        return obs_full
 
     ## Method that provides visualization.
     #  @param self The object pointer.
@@ -165,9 +175,9 @@ class EclEnv(gym.Env):
     #  so that a model can be opened in ResInsight.
     #  @param self The object pointer.
     def close(self):
-        for file in glob.glob(ECL_SIM_MODEL_PATH+ECL_SIM_MODEL_NAME.replace(".DATA", "")+"*"):
-            # print(file)
-            shutil.copy(file, LOG_PATH)
+        for file in glob.glob(self.logging_path+ECL_SIM_MODEL_NAME.replace(".DATA", "")+"*"):
+            print(file)
+            shutil.copy(file, self.logging_path)
              
 
     ## Method that reads and manages a simulator's output files.
@@ -203,8 +213,7 @@ class EclEnv(gym.Env):
                 dones = [self.__done_function(summary, self.wells.name[w_indx], \
                     self.wells.is_producer[w_indx]) for w_indx in range(self.n_agents)]
             except KeyError as e_exept:
-                print("### Error: make sure that keywords in reward and done function \
-                is defined in data file {}".format(e_exept))
+                print("### Error: make sure that keywords in reward and done function is defined in data file {}".format(e_exept))
                 sys.exit(1)
         else:
             rewards = [[0.0]]
@@ -240,8 +249,7 @@ class EclEnv(gym.Env):
                 dones = [self.__done_function(summary, self.wells.name[w_indx], \
                     self.wells.is_producer[w_indx]) for w_indx in range(self.n_agents)]
             except KeyError as e_exept:
-                print("### Error: make sure that keywords in reward and done function \
-                is defined in data file {}".format(e_exept))
+                print("### Error: make sure that keywords in reward and done function is defined in data file {}".format(e_exept))
                 sys.exit(1)
         else:
             rewards = [[0.0]]
@@ -278,6 +286,9 @@ class EclEnv(gym.Env):
         except IOError:
             print("### Error! Please generate EGRID data")
             sys.exit(-1)
+        except KeyError as e:
+            print("### Error! Please generate data ", e)
+            sys.exit(-1)  
         counter = 0
         for k in range(self.dims[2]):
             for j in range(self.dims[1]):
@@ -353,7 +364,7 @@ class EclEnv(gym.Env):
     #  @param file_obj The opened file object.
     def __add_restart_and_load_keyword(self, file_obj):
         file_obj.write("\nLOAD")
-        file_obj.write("\n'{}' /".format(ECL_SIM_MODEL_PATH + \
+        file_obj.write("\n'{}' /".format(self.logging_path + \
             ECL_SIM_MODEL_NAME.replace(".DATA", "")))
         file_obj.write("\nRESTART")
         file_obj.write("\n'{}' {} /".format(self.restart_file.replace(".DATA", ""), \
@@ -362,7 +373,7 @@ class EclEnv(gym.Env):
         self.__add_data(self.solution_kw, file_obj)
         file_obj.write("\nSUMMARY\n")
         self.__add_data(self.summary_kw, file_obj)
-        self.restart_file = LOG_PATH + ECL_SIM_MODEL_NAME
+        self.restart_file = self.logging_path + ECL_SIM_MODEL_NAME
         self.simulation_iter += 1
 
     ## Helper method
@@ -377,5 +388,10 @@ class EclEnv(gym.Env):
                 file_handle.write(" ")
 
 if __name__ == '__main__':
-    ECLOBJ = [EclEnv() for i in range(1)]
+    ECLOBJ = [EclEnv() for _ in range(1)]
     [ECLOBJ[i].reset() for i in range(1)]
+    # print([ECLOBJ[i].step([[100, False, True, True]]) for i in range(1)])
+    observation, reward, done, observation_full = \
+                ECLOBJ[0].step([[100, False, True, True] for _ in range(1)])
+    print(observation_full.shape)
+    print(reward)
